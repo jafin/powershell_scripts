@@ -1,8 +1,5 @@
 <#
 
-.SOURCE 
-	Original source form http://port1433.com/2015/05/31/sql-server-backup-and-restores-with-powershell-part-2-backing-up-a-database/
-
 .SYNOPSIS
     Starts a BACKUP DATABASE/LOG session on a specified server for all databases on a given SQL Server
 .DESCRIPTION
@@ -49,9 +46,10 @@
 .OUTPUTS
     .
 .NOTES
-    .
+    Code from Drew Furgiuele at http://port1433.com/2015/05/31/sql-server-backup-and-restores-with-powershell-part-2-backing-up-a-database/
 .CHANGELOG
-    
+    Added Compression flag to work with SQLExpress (no compression support as at 2014)
+	
 #>
 param(
     [Parameter(Mandatory=$true)] [string] $servername,
@@ -71,31 +69,34 @@ param(
     [Parameter(Mandatory=$false)] [string] $sendKeyTo,
     [Parameter(Mandatory=$false)] [string] $smtpServer,
     [Parameter(Mandatory=$false)] [switch] $ssisdb,    
-    [Parameter(Mandatory=$false)] [string] $ssisdbKeyPassword
+    [Parameter(Mandatory=$false)] [string] $ssisdbKeyPassword,
+    [Parameter(Mandatory=$false)] [string] $compression = "ON"
 )
 
+import-module SQLPS -DisableNameChecking
+ 
 function Make-StrongPassword([int]$length, [int]$nonalphanumericchars)
 {
     if ($length -lt $nonalphanumericchars) { $nonalphanumericchars = $length }
     [Reflection.Assembly]::LoadWithPartialName("System.Web") | Out-Null
     return [System.Web.Security.Membership]::GeneratePassword($length,$nonalphanumericchars)
 }
-
+ 
 $whoami = ([adsisearcher]"(samaccountname=$env:USERNAME)").FindOne().Properties.mail
 Write-Verbose "This script is running as $whoami"
-
+ 
 if ($certificateLocation -and !$privateKeyLocation)
 {
     Throw "If you're backing up a certificate, you should be backing up with an encrypted private key."
 }
-
-
+ 
+ 
 if ($certificateLocation -and !$privateKeyPassword)
 {
     $privateKeyPassword = Make-StrongPassword 20 10
     Write-Warning "User did not provide an encryption password, using automatically generated password..."
 }
-
+ 
 $keyAction = $null
 if ($sendKeyTo)
 {
@@ -120,31 +121,31 @@ if ($sendKeyTo)
         throw "You have requested private keys be emailed to $sendKeyTo but you didn't provide an smtp server to send the email. Please add -smtpserver to your command and try again."
     }
 }
-
+ 
 if ((Test-Path $backupLocation) -eq $false)
 {
     Throw "Unable to resolve backup location. Stopping."
 }
-
+ 
 if (!$databaseName -and $backupFileName)
 {
     Throw "You can't use the backup file name parameter without specifying a database."
 }
-
+ 
 $sqlPath = "SQLSERVER:\SQL\" + $servername + "\" + $instanceName
-
+ 
 if ($systemObjects)
 {
     $dbs = Get-ChildItem ($sqlPath + "\Databases") -Force | Where-Object {$_.Name -ne "tempdb" -and $_.Name -ne "distribution"}
 } else {
     $dbs = Get-ChildItem ($sqlPath + "\Databases")
 }
-
+ 
 if (!$ssisdb)
 {
     $dbs = $dbs | Where-Object {$_.Name -ne "SSISDB"} 
 }
-
+ 
 if ($excludeDatabases)
 {
     foreach ($e in $excludeDatabases)
@@ -152,33 +153,33 @@ if ($excludeDatabases)
         $dbs = $dbs | Where-Object {$_.Name -ne $e}
     }
 }
-
+ 
 if ($databaseName)
 {
     $dbs = $dbs | Where-Object {$_.Name -eq $databaseName}
 }
-
+ 
 foreach ($d in $dbs)
 {
     $d.Refresh()
 }
-
-
+ 
+ 
 if ($backupType -eq "Log")
 {
     $dbs = $dbs | Where-Object {$_.RecoveryModel -eq "Full"}
 }
-
+ 
 if ($databaseName)
 {
     $dbs = $dbs | Where-Object {$_.Name -eq $databaseName}
 }
-
+ 
 if ($dbs.Length -eq 0)
 {
     throw "Nothing to backup!"
 }
-
+ 
 foreach ($d in $dbs)
 {
     $timestamp = Get-Date -UFormat "%Y%m%d_%H%M%S"
@@ -190,9 +191,9 @@ foreach ($d in $dbs)
         $fullBackupLocation = $backupLocation + "\" + $servername + "\" + $currentDBName + "\" + $backupType
         if ((Test-Path $fullBackupLocation) -eq $false) {New-Item -ItemType Directory -Force -Path $fullBackupLocation | Out-Null }
     }
-
+ 
     Write-Verbose "Creating $backupType backup of database $currentDBName..."
-
+ 
     if ($backupType -eq "Full")
     {
         if ($d.DatabaseEncryptionKey.EncryptionState -eq "Encrypted")
@@ -287,12 +288,12 @@ foreach ($d in $dbs)
             BackupDevice = $fullbackup.Devices
             Database = $currentDBName
             BackupAction = "Database"
-            CompressionOption = "On"
+            CompressionOption = $compression
             FormatMedia = $true
             Initialize = $true
             SkipTapeHeader = $true
         }
-
+ 
         if ($copyOnly)
         {
             $parameters.Add("CopyOnly",$true);
@@ -301,11 +302,11 @@ foreach ($d in $dbs)
     }
     if ($backupType -eq "Differential")
     {
-        Backup-SqlDatabase -Path $sqlPath -MediaDescription ("Differential Backup from " + $servername + " of " + $currentDBName + " on " + (Get-Date)) -BackupFile ($fullBackupLocation + "\" + $currentDBName + "_" + $backupType + "_" + $timestamp + ".dif")  -Database $currentDBName -BackupAction Database -Incremental -CompressionOption On -FormatMedia -Initialize -SkipTapeHeader
+        Backup-SqlDatabase -Path $sqlPath -MediaDescription ("Differential Backup from " + $servername + " of " + $currentDBName + " on " + (Get-Date)) -BackupFile ($fullBackupLocation + "\" + $currentDBName + "_" + $backupType + "_" + $timestamp + ".dif")  -Database $currentDBName -BackupAction Database -Incremental -CompressionOption $compression -FormatMedia -Initialize -SkipTapeHeader
     }
     if ($backupType -eq "Log")
     {
-        Backup-SqlDatabase -Path $sqlPath -MediaDescription ("Transaction Log Backup from " + $servername + " of " + $currentDBName + " on " + (Get-Date)) -BackupFile ($fullBackupLocation + "\" + $currentDBName + "_" + $backupType + "_" + $timestamp + ".trn") -Database $currentDBName -BackupAction Log -CompressionOption On -FormatMedia -Initialize -SkipTapeHeader
+        Backup-SqlDatabase -Path $sqlPath -MediaDescription ("Transaction Log Backup from " + $servername + " of " + $currentDBName + " on " + (Get-Date)) -BackupFile ($fullBackupLocation + "\" + $currentDBName + "_" + $backupType + "_" + $timestamp + ".trn") -Database $currentDBName -BackupAction Log -CompressionOption $compression -FormatMedia -Initialize -SkipTapeHeader
     }
     Write-Verbose "Backup completed!"
 }

@@ -70,7 +70,7 @@ param(
     [Parameter(Mandatory=$false)] [string] $smtpServer,
     [Parameter(Mandatory=$false)] [switch] $ssisdb,    
     [Parameter(Mandatory=$false)] [string] $ssisdbKeyPassword,
-    [Parameter(Mandatory=$false)] [string] $compression = "ON"
+    [Parameter(Mandatory=$false)] [validateset("On","Off")] [string] $compression = "ON"
 )
 
 import-module SQLPS -DisableNameChecking
